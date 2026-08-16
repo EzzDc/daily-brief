@@ -1,0 +1,17 @@
+[
+  {
+    "name": "Alsaif Gallery",
+    "feeds": [
+      {
+        "q": "\"Alsaif Gallery\" OR \"Al Saif Gallery\" OR \"AlSaif Gallery\"",
+        "hl": "en", "gl": "SA", "ceid": "SA:en"
+      },
+      {
+        "q": "\"السيف غاليري\"",
+        "hl": "ar", "gl": "SA", "ceid": "SA:ar"
+      }
+    ],
+    "exclude": ["كوبون", "coupon", "promo code", "خصم", "وظائف", "jobs"],
+    "notes": "Home goods retailer, Riyadh. Branches in SA, UAE, KW, OM, QA."
+  }
+]
