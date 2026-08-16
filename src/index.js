@@ -6,10 +6,19 @@ const json = obj => new Response(JSON.stringify(obj, null, 2), {
 
 export default {
   async fetch(request, env) {
-    const days = new URL(request.url).searchParams.get("days") || "2";
-    return json(await getAllNews(env, days));
+    const url = new URL(request.url);
+    const days = url.searchParams.get("days") || "2";
+    const mark = url.searchParams.get("mark") === "1";
+
+    if (!env.BRIEF) {
+      return json({ error: "KV binding BRIEF is missing — check Worker → Bindings" });
+    }
+
+    return json(await getAllNews(env, days, mark));
   }
 };
+
+// ---------- search ----------
 
 async function searchClient(env, client, days) {
   const prompt = `Search the web for news about this company from the last ${days} days:
@@ -57,15 +66,59 @@ If there is nothing, return []`;
     .trim();
 
   try {
-    return { items: JSON.parse(text) };
+    const parsed = JSON.parse(text);
+    return { items: Array.isArray(parsed) ? parsed : [] };
   } catch {
     return { error: "could not parse", raw: text.slice(0, 300), items: [] };
   }
 }
 
+// ---------- dedupe ----------
+
+function fingerprints(item) {
+  const keys = [];
+
+  if (item.url) {
+    const clean = String(item.url)
+      .toLowerCase()
+      .split("?")[0]
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .replace(/\/$/, "");
+    if (clean) keys.push("seen:url:" + clean);
+  }
+
+  if (item.title) {
+    const clean = String(item.title)
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, "")   // Unicode-aware: keeps Arabic
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+    if (clean) keys.push("seen:title:" + clean);
+  }
+
+  return keys;
+}
+
+async function isSeen(env, item) {
+  for (const key of fingerprints(item)) {
+    if (await env.BRIEF.get(key) !== null) return true;
+  }
+  return false;
+}
+
+async function markSeen(env, item) {
+  for (const key of fingerprints(item)) {
+    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 }); // 30 days
+  }
+}
+
+// ---------- main ----------
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function getAllNews(env, days) {
+async function getAllNews(env, days, mark) {
   const out = [];
 
   for (const client of clients) {
@@ -73,14 +126,26 @@ async function getAllNews(env, days) {
 
     const bad = (client.exclude || []).map(w => w.toLowerCase());
     const kept = res.items.filter(i =>
-      !bad.some(w => (i.title || "").toLowerCase().includes(w))
+      !bad.some(w => String(i.title || "").toLowerCase().includes(w))
     );
+
+    const fresh = [];
+    for (const item of kept) {
+      if (!await isSeen(env, item)) fresh.push(item);
+    }
+
+    // TEMPORARY: ?mark=1 simulates a successful send.
+    // In Phase 6 this moves to AFTER Resend confirms delivery.
+    if (mark) {
+      for (const item of fresh) await markSeen(env, item);
+    }
 
     out.push({
       client: client.name,
       found: res.items.length,
-      kept: kept.length,
-      items: kept,
+      afterExclude: kept.length,
+      fresh: fresh.length,
+      items: fresh,
       error: res.error,
       raw: res.raw || res.detail
     });
