@@ -1,5 +1,11 @@
 {
   "name": "daily-brief",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-01"
+  "compatibility_date": "2026-08-01",
+  "kv_namespaces": [
+    {
+      "binding": "BRIEF",
+      "id": "c70dc17f23654012880f68244c4207c6"
+    }
+  ]
 }
