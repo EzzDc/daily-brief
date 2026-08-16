@@ -3,21 +3,18 @@
     "id": "alsaif-gallery",
     "name": "Alsaif Gallery",
     "domain": "alsaifgallery.com",
-    "feeds": [
-      {
-        "q": "\"Alsaif Gallery\" OR \"Al Saif Gallery\" OR \"AlSaif Gallery\"",
-        "hl": "en", "gl": "SA", "ceid": "SA:en"
-      },
-      {
-        "q": "\"السيف غاليري\" OR \"السيف جاليري\"",
-        "hl": "ar", "gl": "SA", "ceid": "SA:ar"
-      },
-      {
-        "q": "\"محمد بن سليمان السيف\" OR \"الرئيس التنفيذي السيف غاليري\"",
-        "hl": "ar", "gl": "SA", "ceid": "SA:ar"
-      }
-    ],
+    "aliases": ["Al Saif Gallery", "AlSaif Gallery", "السيف غاليري", "السيف جاليري", "محمد بن سليمان السيف"],
+    "focus": "all news about this company",
     "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "وظائف", "jobs", "شكوى"],
     "notes": "Home goods retailer, Riyadh, founded 2006. House brand: Edison. Branches in SA, UAE, KW, OM, QA."
+  },
+  {
+    "id": "body-shop-sa",
+    "name": "The Body Shop Saudi Arabia",
+    "domain": "thebodyshop.com.sa",
+    "aliases": ["The Body Shop", "ذا بودي شوب", "بودي شوب"],
+    "focus": "Saudi Arabia and GCC operations only",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "وظائف", "jobs", "sale", "gift set"],
+    "notes": "Global beauty brand, operated regionally by a franchise partner. Only Saudi and GCC operations matter — new stores, franchise or ownership changes, supply chain, e-commerce. Ignore UK and global corporate news unless it affects the Saudi business."
   }
 ]
