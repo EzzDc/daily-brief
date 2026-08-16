@@ -11,7 +11,7 @@ export default {
     const mark = url.searchParams.get("mark") === "1";
 
     if (!env.BRIEF) {
-      return json({ error: "KV binding BRIEF is missing — check Worker → Bindings" });
+      return json({ error: "KV binding BRIEF is missing — check wrangler.jsonc" });
     }
 
     return json(await getAllNews(env, days, mark));
@@ -34,9 +34,10 @@ Rules:
 - Ignore anything about a different company with a similar name.
 - Search in both English and Arabic.
 
-Return ONLY a JSON array, no other text, no markdown fences:
-[{"title":"","summary":"one sentence","url":"","date":"YYYY-MM-DD","source":""}]
-If there is nothing, return []`;
+Format: [{"title":"","summary":"one sentence","url":"","date":"YYYY-MM-DD","source":""}]
+If there is nothing, return []
+
+Output the JSON array and nothing else. No preamble, no explanation, no markdown fences.`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -62,14 +63,26 @@ If there is nothing, return []`;
     .filter(b => b.type === "text")
     .map(b => b.text)
     .join("")
-    .replace(/```json|```/g, "")
     .trim();
 
+  const parsed = extractArray(text);
+  if (!parsed) {
+    return { error: "could not parse", raw: text.slice(0, 600), items: [] };
+  }
+  return { items: parsed };
+}
+
+// pull the JSON array out of a response that may have prose around it
+function extractArray(text) {
+  const cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) return null;
   try {
-    const parsed = JSON.parse(text);
-    return { items: Array.isArray(parsed) ? parsed : [] };
+    const parsed = JSON.parse(cleaned.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    return { error: "could not parse", raw: text.slice(0, 300), items: [] };
+    return null;
   }
 }
 
@@ -85,7 +98,7 @@ function fingerprints(item) {
       .replace(/^https?:\/\//, "")
       .replace(/^www\./, "")
       .replace(/\/$/, "");
-    if (clean) keys.push("seen:url:" + clean);
+    if (clean) keys.push("seen:url:" + clean.slice(0, 400));
   }
 
   if (item.title) {
@@ -103,55 +116,4 @@ function fingerprints(item) {
 
 async function isSeen(env, item) {
   for (const key of fingerprints(item)) {
-    if (await env.BRIEF.get(key) !== null) return true;
-  }
-  return false;
-}
-
-async function markSeen(env, item) {
-  for (const key of fingerprints(item)) {
-    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 }); // 30 days
-  }
-}
-
-// ---------- main ----------
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-async function getAllNews(env, days, mark) {
-  const out = [];
-
-  for (const client of clients) {
-    const res = await searchClient(env, client, days);
-
-    const bad = (client.exclude || []).map(w => w.toLowerCase());
-    const kept = res.items.filter(i =>
-      !bad.some(w => String(i.title || "").toLowerCase().includes(w))
-    );
-
-    const fresh = [];
-    for (const item of kept) {
-      if (!await isSeen(env, item)) fresh.push(item);
-    }
-
-    // TEMPORARY: ?mark=1 simulates a successful send.
-    // In Phase 6 this moves to AFTER Resend confirms delivery.
-    if (mark) {
-      for (const item of fresh) await markSeen(env, item);
-    }
-
-    out.push({
-      client: client.name,
-      found: res.items.length,
-      afterExclude: kept.length,
-      fresh: fresh.length,
-      items: fresh,
-      error: res.error,
-      raw: res.raw || res.detail
-    });
-
-    await sleep(500);
-  }
-
-  return out;
-}
+    if (await env.BRIEF.get(key) !== null)
