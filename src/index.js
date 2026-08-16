@@ -15,7 +15,8 @@ async function searchClient(env, client, days) {
   const prompt = `Search the web for news about this company from the last ${days} days:
 
 Company: ${client.name}
-Also known as: ${client.feeds.map(f => f.q).join(" / ")}
+Also known as: ${(client.aliases || []).join(", ")}
+Focus: ${client.focus || "all news about this company"}
 Context: ${client.notes || ""}
 Website: ${client.domain || ""}
 
