@@ -1,123 +1,90 @@
 import clients from "../clients.json";
 
-const HEADERS = {
-  "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  "accept": "application/rss+xml, application/xml, text/xml, */*",
-  "accept-language": "en-US,en;q=0.9,ar;q=0.8"
-};
-
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
 });
 
 export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-    const days = url.searchParams.get("days") || "2";
-
-    // ?debug=1 -> show exactly what Google sends back
-    if (url.searchParams.get("debug")) {
-      const feed = clients[0].feeds[0];
-      const u = feedUrl(feed, days);
-      const r = await fetch(u, { headers: HEADERS });
-      const body = await r.text();
-      return json({
-        url: u,
-        status: r.status,
-        contentType: r.headers.get("content-type"),
-        bodyLength: body.length,
-        itemCount: (body.match(/<item>/g) || []).length,
-        sample: body.slice(0, 800)
-      });
-    }
-
-    return json(await getAllNews(days));
+  async fetch(request, env) {
+    const days = new URL(request.url).searchParams.get("days") || "2";
+    return json(await getAllNews(env, days));
   }
 };
 
-function feedUrl(feed, days) {
-  const q = encodeURIComponent(`${feed.q} when:${days}d`);
-  return `https://news.google.com/rss/search?q=${q}`
-       + `&hl=${feed.hl}&gl=${feed.gl}&ceid=${encodeURIComponent(feed.ceid)}`;
-}
+async function searchClient(env, client, days) {
+  const prompt = `Search the web for news about this company from the last ${days} days:
 
-function decode(s = "") {
-  return s
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n))
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
+Company: ${client.name}
+Also known as: ${client.feeds.map(f => f.q).join(" / ")}
+Context: ${client.notes || ""}
+Website: ${client.domain || ""}
 
-function parseItems(xml) {
-  return [...xml.matchAll(/<item>(.*?)<\/item>/gs)].map(m => {
-    const block = m[1];
-    const grab = tag => {
-      const hit = block.match(new RegExp(`<${tag}[^>]*>(.*?)</${tag}>`, "s"));
-      return hit ? decode(hit[1].trim()) : "";
-    };
-    return {
-      title: grab("title"),
-      link: grab("link"),
-      date: grab("pubDate"),
-      source: grab("source")
-    };
+Rules:
+- Only real news. Ignore coupon sites, discount roundups, job postings, and store-listing pages.
+- Ignore anything about a different company with a similar name.
+- Search in both English and Arabic.
+
+Return ONLY a JSON array, no other text, no markdown fences:
+[{"title":"","summary":"one sentence","url":"","date":"YYYY-MM-DD","source":""}]
+If there is nothing, return []`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-5",
+      max_tokens: 2000,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]
+    })
   });
-}
 
-// now reports WHY a feed came back empty instead of hiding it
-async function fetchFeed(feed, days) {
+  if (!res.ok) {
+    return { error: `API ${res.status}`, detail: (await res.text()).slice(0, 300), items: [] };
+  }
+
+  const data = await res.json();
+  const text = data.content
+    .filter(b => b.type === "text")
+    .map(b => b.text)
+    .join("")
+    .replace(/```json|```/g, "")
+    .trim();
+
   try {
-    const res = await fetch(feedUrl(feed, days), { headers: HEADERS });
-    const body = await res.text();
-    return {
-      status: res.status,
-      bodyLength: body.length,
-      items: res.ok ? parseItems(body) : []
-    };
-  } catch (err) {
-    return { status: "threw", error: String(err), items: [] };
+    return { items: JSON.parse(text) };
+  } catch {
+    return { error: "could not parse", raw: text.slice(0, 300), items: [] };
   }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function getAllNews(days) {
+async function getAllNews(env, days) {
   const out = [];
 
   for (const client of clients) {
-    let items = [];
-    const feedLog = [];
-
-    for (const feed of client.feeds) {
-      const res = await fetchFeed(feed, days);
-      feedLog.push({
-        lang: feed.hl,
-        status: res.status,
-        bodyLength: res.bodyLength,
-        found: res.items.length,
-        error: res.error
-      });
-      items.push(...res.items);
-      await sleep(200);
-    }
-
-    const seen = new Set();
-    items = items.filter(i => !seen.has(i.title) && seen.add(i.title));
+    const res = await searchClient(env, client, days);
 
     const bad = (client.exclude || []).map(w => w.toLowerCase());
-    const kept = items.filter(i =>
-      !bad.some(w => i.title.toLowerCase().includes(w))
+    const kept = res.items.filter(i =>
+      !bad.some(w => (i.title || "").toLowerCase().includes(w))
     );
 
     out.push({
       client: client.name,
-      feeds: feedLog,          // <-- the useful part
-      fetched: items.length,
+      found: res.items.length,
       kept: kept.length,
-      items: kept
+      items: kept,
+      error: res.error,
+      raw: res.raw || res.detail
     });
+
+    await sleep(500);
   }
 
   return out;
