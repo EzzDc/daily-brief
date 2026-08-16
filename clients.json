@@ -1,17 +1,23 @@
 [
   {
+    "id": "alsaif-gallery",
     "name": "Alsaif Gallery",
+    "domain": "alsaifgallery.com",
     "feeds": [
       {
         "q": "\"Alsaif Gallery\" OR \"Al Saif Gallery\" OR \"AlSaif Gallery\"",
         "hl": "en", "gl": "SA", "ceid": "SA:en"
       },
       {
-        "q": "\"السيف غاليري\"",
+        "q": "\"السيف غاليري\" OR \"السيف جاليري\"",
+        "hl": "ar", "gl": "SA", "ceid": "SA:ar"
+      },
+      {
+        "q": "\"محمد بن سليمان السيف\" OR \"الرئيس التنفيذي السيف غاليري\"",
         "hl": "ar", "gl": "SA", "ceid": "SA:ar"
       }
     ],
-    "exclude": ["كوبون", "coupon", "promo code", "خصم", "وظائف", "jobs"],
-    "notes": "Home goods retailer, Riyadh. Branches in SA, UAE, KW, OM, QA."
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "وظائف", "jobs", "شكوى"],
+    "notes": "Home goods retailer, Riyadh, founded 2006. House brand: Edison. Branches in SA, UAE, KW, OM, QA."
   }
 ]
