@@ -2,7 +2,10 @@ import clients from "../clients.json";
 
 const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
-const LOOKBACK_DAYS = "8";                    // weekly run, 8 days to absorb indexing lag
+const BASE_DAYS = 8;
+
+const SONNET = "claude-sonnet-5";
+const HAIKU  = "claude-haiku-4-5-20251001";
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
@@ -16,8 +19,9 @@ export default {
 
   async fetch(request, env) {
     const url = new URL(request.url);
-    const days = url.searchParams.get("days") || LOOKBACK_DAYS;
     const send = url.searchParams.get("send") === "1";
+    const adaptive = url.searchParams.get("adaptive") === "1";
+    const days = url.searchParams.get("days");
 
     if (!env.BRIEF) return json({ error: "KV binding BRIEF is missing" });
 
@@ -25,7 +29,8 @@ export default {
       return json({ error: "unauthorized" });
     }
 
-    const results = await getAllNews(env, days);
+    // Manual runs check every client unless you ask for adaptive.
+    const results = await getAllNews(env, { adaptive, forceDays: days });
     if (!send) return json({ dryRun: true, results, html: buildHtml(results) });
     return json(await sendBrief(env, results));
   }
@@ -33,7 +38,7 @@ export default {
 
 async function runBrief(env) {
   try {
-    const results = await getAllNews(env, LOOKBACK_DAYS);
+    const results = await getAllNews(env, { adaptive: true });
     await sendBrief(env, results);
   } catch (err) {
     await alertFailure(env, err);
@@ -56,9 +61,23 @@ async function alertFailure(env, err) {
   });
 }
 
+// ---------- cadence state ----------
+
+async function getState(env, id) {
+  const raw = await env.BRIEF.get("state:" + id);
+  if (!raw) return { misses: 0, next: 0 };
+  try { return JSON.parse(raw); } catch { return { misses: 0, next: 0 }; }
+}
+
+// how many runs to wait before checking again
+function backoff(misses) {
+  if (misses < 2) return 1;
+  return Math.min(misses, 4);
+}
+
 // ---------- search ----------
 
-async function searchClient(env, client, days) {
+async function searchClient(env, client, days, model) {
   const prompt = `Search the web for news about this company from the last ${days} days:
 
 Company: ${client.name}
@@ -85,10 +104,10 @@ Output the JSON array and nothing else. No preamble, no explanation, no markdown
       "anthropic-version": "2023-06-01"
     },
     body: JSON.stringify({
-      model: "claude-sonnet-5",
+      model,
       max_tokens: 2000,
       messages: [{ role: "user", content: prompt }],
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }]
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }]
     })
   });
 
@@ -141,7 +160,7 @@ async function isSeen(env, item) {
 
 async function markSeen(env, item) {
   for (const key of fingerprints(item)) {
-    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 }); // 30 days
+    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 });
   }
 }
 
@@ -202,7 +221,6 @@ async function sendBrief(env, results) {
 
   const body = await res.text();
 
-  // ORDER MATTERS: mark seen only after the send succeeds.
   if (!res.ok) {
     return { sent: false, status: res.status, detail: body.slice(0, 300), marked: 0 };
   }
@@ -222,11 +240,39 @@ async function sendBrief(env, results) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function getAllNews(env, days) {
+async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
   const out = [];
 
+  // global run counter, only advances on adaptive runs
+  let runIndex = Number(await env.BRIEF.get("run:index") || "0");
+  if (adaptive) {
+    runIndex += 1;
+    await env.BRIEF.put("run:index", String(runIndex));
+  }
+
   for (const client of clients) {
-    const res = await searchClient(env, client, days);
+    const id = client.id || client.name;
+    const state = await getState(env, id);
+
+    // --- skip if this client is in backoff ---
+    if (adaptive && runIndex < state.next) {
+      out.push({
+        client: client.name,
+        skipped: true,
+        nextRun: state.next,
+        items: []
+      });
+      continue;
+    }
+
+    // cover every week since this client was last checked
+    const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
+    const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
+
+    // quiet clients get the cheaper model
+    const model = state.misses >= 2 ? HAIKU : SONNET;
+
+    const res = await searchClient(env, client, days, model);
 
     const bad = (client.exclude || []).map(w => w.toLowerCase());
     const kept = res.items.filter(i =>
@@ -238,8 +284,20 @@ async function getAllNews(env, days) {
       if (!await isSeen(env, item)) fresh.push(item);
     }
 
+    // --- update cadence state ---
+    if (adaptive) {
+      const misses = res.items.length > 0 ? 0 : state.misses + 1;
+      await env.BRIEF.put("state:" + id, JSON.stringify({
+        misses,
+        lastRun: runIndex,
+        next: runIndex + backoff(misses)
+      }));
+    }
+
     out.push({
       client: client.name,
+      model: model === HAIKU ? "haiku" : "sonnet",
+      days,
       found: res.items.length,
       items: fresh,
       error: res.error,
