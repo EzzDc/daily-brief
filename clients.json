@@ -51,16 +51,16 @@
     "aliases": ["Red Bull MOBILE", "ريدبول موبايل", "ريد بُل موبايل"],
     "focus": "ONLY the Saudi mobile/telecom operator. Ignore all Red Bull energy drink, Formula 1, football, and sports news.",
     "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs", "F1", "Formula", "Racing", "Verstappen", "energy drink"],
-    "notes": "MVNO in Saudi Arabia. Relevant news: network host changes, licensing, subscriber numbers, plans, e-SIM, devices regulator (CST) actions. NOT the energy drink brand or its sports teams."
+    "notes": "MVNO in Saudi Arabia. Relevant news: network host changes, licensing, subscriber numbers, plans, e-SIM, devices, regulator (CST) actions. NOT the energy drink brand or its sports teams."
   },
   {
     "id": "abo-moati",
     "name": "Abo Moati",
     "domain": "abomoati.com",
-    "aliases": ["Abu Moati", "ابو معطي", "أبو معطي"],
+    "aliases": ["Abu Moati", "ابو معطي", "أبو معطي", "Abdullah Saad Abo Moati", "مكتبة أبو معطي"],
     "focus": "all news about this company",
     "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
-    "notes": "Abdullah Saad Abo Moati for Bookstores has been operating since its establishment in 1994 in the field of stationery, school supplies, and office products. Office and educational supplies, art materials, and creative tools. Gifts and packaging materials. Paper supplies, printers, and inks across both wholesale and retail sectors."
+    "notes": "Abdullah Saad Abo Moati for Bookstores, established 1994. Stationery, school and office supplies, art materials, gifts and packaging, paper, printers and inks. Wholesale and retail. Publicly listed — watch for quarterly results, new branches, back-to-school season news."
   },
   {
     "id": "matryal",
@@ -78,7 +78,7 @@
     "aliases": ["Caridal", "كارديال"],
     "focus": "all news about this company",
     "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
-    "notes": "is a prominent Saudi luxury brand established in 1983 that specializes in high-end men's and women's watches, fine jewelry, bracelets, perfumes, and premium eyewear. Operating extensively across the region with over 160 retail branches and an official Cardial Online Store, the brand is known for blending elegant craftsmanship with competitive pricing."
+    "notes": "Saudi luxury brand established 1983. Men's and women's watches, fine jewelry, bracelets, perfumes, premium eyewear. Over 160 branches plus an online store. Watch for brand partnerships, new branches, distribution agreements."
   },
   {
     "id": "hala-markets",
@@ -99,15 +99,6 @@
     "notes": "Apparel/wear e-commerce brand."
   },
   {
-    "id": "scrubser",
-    "name": "Scrubser",
-    "domain": "scrubser-shop.com",
-    "aliases": ["سكربزر"],
-    "focus": "all news about this company",
-    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
-    "notes": "E-commerce brand selling medical scrubs and uniforms."
-  },
-  {
     "id": "almthaq-alarabi",
     "name": "Almthaq Alarabi",
     "domain": "almthaqalarabi.com",
@@ -115,15 +106,6 @@
     "focus": "all news about this company",
     "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
     "notes": "Saudi food and confectionery brand."
-  },
-  {
-    "id": "fahda-sweets",
-    "name": "Fahda Sweets",
-    "domain": "fahdasweets.com",
-    "aliases": ["Fahda", "فهدة", "حلويات فهدة"],
-    "focus": "all news about this company",
-    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
-    "notes": "Saudi sweets and confectionery retailer."
   },
   {
     "id": "innova-pharmacy",
