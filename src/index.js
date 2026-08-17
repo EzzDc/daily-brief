@@ -1,28 +1,60 @@
 import clients from "../clients.json";
 
-const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- change this
+const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
+const LOOKBACK_DAYS = "8";                    // weekly run, 8 days to absorb indexing lag
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
 });
 
 export default {
+  // Sundays 05:30 UTC = 08:30 Amman
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runBrief(env));
+  },
+
   async fetch(request, env) {
     const url = new URL(request.url);
-    const days = url.searchParams.get("days") || "2";
+    const days = url.searchParams.get("days") || LOOKBACK_DAYS;
     const send = url.searchParams.get("send") === "1";
 
     if (!env.BRIEF) return json({ error: "KV binding BRIEF is missing" });
 
+    if (send && url.searchParams.get("token") !== env.TRIGGER_TOKEN) {
+      return json({ error: "unauthorized" });
+    }
+
     const results = await getAllNews(env, days);
-
-    // Default is a dry run: see what WOULD be sent, without sending.
     if (!send) return json({ dryRun: true, results, html: buildHtml(results) });
-
     return json(await sendBrief(env, results));
   }
 };
+
+async function runBrief(env) {
+  try {
+    const results = await getAllNews(env, LOOKBACK_DAYS);
+    await sendBrief(env, results);
+  } catch (err) {
+    await alertFailure(env, err);
+  }
+}
+
+async function alertFailure(env, err) {
+  await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${env.RESEND_API_KEY}`
+    },
+    body: JSON.stringify({
+      from: FROM_EMAIL,
+      to: [TO_EMAIL],
+      subject: "⚠️ Client brief failed",
+      html: `<pre>${esc(String((err && err.stack) || err))}</pre>`
+    })
+  });
+}
 
 // ---------- search ----------
 
@@ -109,7 +141,7 @@ async function isSeen(env, item) {
 
 async function markSeen(env, item) {
   for (const key of fingerprints(item)) {
-    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 });
+    await env.BRIEF.put(key, "1", { expirationTtl: 2592000 }); // 30 days
   }
 }
 
@@ -122,7 +154,7 @@ function buildHtml(results) {
   const withNews = results.filter(r => r.items.length > 0);
 
   if (withNews.length === 0) {
-    return `<p style="font-family:sans-serif;color:#666">No client news today.</p>`;
+    return `<p style="font-family:sans-serif;color:#666">No client news this week.</p>`;
   }
 
   const sections = withNews.map(r => {
@@ -161,14 +193,16 @@ async function sendBrief(env, results) {
     body: JSON.stringify({
       from: FROM_EMAIL,
       to: [TO_EMAIL],
-      subject: total > 0 ? `Client brief — ${today} (${total})` : `Client brief — ${today} (nothing new)`,
+      subject: total > 0
+        ? `Weekly client brief — ${today} (${total})`
+        : `Weekly client brief — ${today} (nothing new)`,
       html
     })
   });
 
   const body = await res.text();
 
-  // ORDER MATTERS: only mark items as seen once the send actually succeeded.
+  // ORDER MATTERS: mark seen only after the send succeeds.
   if (!res.ok) {
     return { sent: false, status: res.status, detail: body.slice(0, 300), marked: 0 };
   }
