@@ -1,6 +1,6 @@
 import clients from "../clients.json";
 
-const TO_EMAIL = "ezz.dissi@tryoto.com";   // <-- change this
+const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- change this
 const FROM_EMAIL = "onboarding@resend.dev";
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
