@@ -3,18 +3,144 @@
     "id": "alsaif-gallery",
     "name": "Alsaif Gallery",
     "domain": "alsaifgallery.com",
-    "aliases": ["Al Saif Gallery", "AlSaif Gallery", "السيف غاليري", "السيف جاليري", "محمد بن سليمان السيف"],
+    "aliases": ["Al Saif Gallery", "AlSaif Gallery", "السيف غاليري", "السيف جاليري", "مجموعة السيف الاستثمارية", "محمد بن سليمان السيف"],
     "focus": "all news about this company",
-    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "وظائف", "jobs", "شكوى"],
-    "notes": "Home goods retailer, Riyadh, founded 2006. House brand: Edison. Branches in SA, UAE, KW, OM, QA."
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Home goods and kitchenware retailer, Riyadh, founded 2006. House brand: Edison. Branches in SA, UAE, KW, OM, QA."
   },
   {
-    "id": "body-shop-sa",
-    "name": "The Body Shop Saudi Arabia",
-    "domain": "thebodyshop.com.sa",
-    "aliases": ["The Body Shop", "ذا بودي شوب", "بودي شوب"],
-    "focus": "Saudi Arabia and GCC operations only",
-    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "وظائف", "jobs", "sale", "gift set"],
-    "notes": "Global beauty brand, operated regionally by a franchise partner. Only Saudi and GCC operations matter — new stores, franchise or ownership changes, supply chain, e-commerce. Ignore UK and global corporate news unless it affects the Saudi business."
+    "id": "al-dawaa",
+    "name": "Al Dawaa Pharmacies",
+    "domain": "al-dawaa.com",
+    "aliases": ["Al Dawaa", "Al-Dawaa Medical Services", "الدواء", "صيدليات الدواء"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Major Saudi pharmacy chain, publicly listed. Watch for financial results, store expansion, e-commerce and delivery changes, regulatory news."
+  },
+  {
+    "id": "zohoor-alreef",
+    "name": "Zohoor Alreef",
+    "domain": "zohooralreef.com",
+    "aliases": ["Zohoor Al Reef", "زهور الريف"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi personal care, fragrance and natural products retailer with a large branch network."
+  },
+  {
+    "id": "dkhoun",
+    "name": "Dkhoun",
+    "domain": "dkhoun.com",
+    "aliases": ["Dkhoon", "دخون"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi oud, bakhoor and fragrance retailer."
+  },
+  {
+    "id": "aldakheel-oud",
+    "name": "Al Dakheel Oud",
+    "domain": "sa.aldakheeloud.com",
+    "aliases": ["Aldakheel Oud", "Al Dakheel", "الدخيل للعود"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Oud and perfume retailer operating in Saudi Arabia."
+  },
+  {
+    "id": "redbull-mobile-sa",
+    "name": "Red Bull Mobile Saudi Arabia",
+    "domain": "redbullmobile.sa",
+    "aliases": ["Red Bull MOBILE", "ريدبول موبايل", "ريد بُل موبايل"],
+    "focus": "ONLY the Saudi mobile/telecom operator. Ignore all Red Bull energy drink, Formula 1, football, and sports news.",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs", "F1", "Formula", "Racing", "Verstappen", "energy drink"],
+    "notes": "MVNO in Saudi Arabia. Relevant news: network host changes, licensing, subscriber numbers, plans, e-SIM, devices regulator (CST) actions. NOT the energy drink brand or its sports teams."
+  },
+  {
+    "id": "abo-moati",
+    "name": "Abo Moati",
+    "domain": "abomoati.com",
+    "aliases": ["Abu Moati", "ابو معطي", "أبو معطي"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Abdullah Saad Abo Moati for Bookstores has been operating since its establishment in 1994 in the field of stationery, school supplies, and office products. Office and educational supplies, art materials, and creative tools. Gifts and packaging materials. Paper supplies, printers, and inks across both wholesale and retail sectors."
+  },
+  {
+    "id": "matryal",
+    "name": "Matryal",
+    "domain": "matryal.sa",
+    "aliases": ["ماتريال"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi online marketplace for construction and building materials. Watch for funding, partnerships with suppliers, logistics and delivery expansion."
+  },
+  {
+    "id": "cardial",
+    "name": "Cardial",
+    "domain": "cardial.sa",
+    "aliases": ["Caridal", "كارديال"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "is a prominent Saudi luxury brand established in 1983 that specializes in high-end men's and women's watches, fine jewelry, bracelets, perfumes, and premium eyewear. Operating extensively across the region with over 160 retail branches and an official Cardial Online Store, the brand is known for blending elegant craftsmanship with competitive pricing."
+  },
+  {
+    "id": "hala-markets",
+    "name": "Hala Markets",
+    "domain": "hala-markets.sa",
+    "aliases": ["Hala Market", "أسواق هلا", "أسواق ومخابز هلا"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi supermarket and bakery chain. Watch for new branches, grocery delivery, supply chain news."
+  },
+  {
+    "id": "blooming",
+    "name": "Blooming",
+    "domain": "bloomingwear.com",
+    "aliases": ["Blooming Wear", "بلمونج"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs", "flower"],
+    "notes": "Apparel/wear e-commerce brand."
+  },
+  {
+    "id": "scrubser",
+    "name": "Scrubser",
+    "domain": "scrubser-shop.com",
+    "aliases": ["سكربزر"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "E-commerce brand selling medical scrubs and uniforms."
+  },
+  {
+    "id": "almthaq-alarabi",
+    "name": "Almthaq Alarabi",
+    "domain": "almthaqalarabi.com",
+    "aliases": ["Al Mthaq Al Arabi", "المذاق العربي"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi food and confectionery brand."
+  },
+  {
+    "id": "fahda-sweets",
+    "name": "Fahda Sweets",
+    "domain": "fahdasweets.com",
+    "aliases": ["Fahda", "فهدة", "حلويات فهدة"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs"],
+    "notes": "Saudi sweets and confectionery retailer."
+  },
+  {
+    "id": "innova-pharmacy",
+    "name": "Innova Pharmacy",
+    "domain": "innovapharmacy.com",
+    "aliases": ["Innova", "صيدليات انوفا", "صيدليات إنوفا"],
+    "focus": "all news about this company",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs", "Innova Solutions", "Innovation"],
+    "notes": "Saudi pharmacy chain. Watch for new branches, e-commerce, delivery, health regulator news."
+  },
+  {
+    "id": "tavola",
+    "name": "Tavola",
+    "domain": "tavolashop.com",
+    "aliases": ["Tavola Shop", "تافولا"],
+    "focus": "GCC retail operations (UAE and Saudi). Ignore unrelated businesses named Tavola such as restaurants.",
+    "exclude": ["كوبون", "coupon", "promo code", "كود خصم", "تخفيضات", "عروض", "وظائف", "jobs", "restaurant", "pizzeria", "trattoria"],
+    "notes": "Kitchenware and cookware retailer in the GCC. Watch for new stores, brand partnerships, e-commerce expansion."
   }
 ]
