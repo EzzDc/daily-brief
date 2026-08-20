@@ -30,6 +30,10 @@ export default {
     }
 
     // Manual runs check every client unless you ask for adaptive.
+    if (url.pathname === "/dashboard") {
+      return handleDashboard(request, env, url);
+    }
+
     const results = await getAllNews(env, { adaptive, forceDays: days });
     if (!send) return json({ dryRun: true, results, html: buildHtml(results) });
     return json(await sendBrief(env, results));
@@ -134,6 +138,68 @@ function extractArray(text) {
   } catch { return null; }
 }
 
+// ---------- company background profile ----------
+
+async function researchProfile(env, client) {
+  const prompt = `Research the company "${client.name}" and produce a structured background profile for a client-intelligence dashboard.
+
+Also known as: ${(client.aliases || []).join(", ")}
+Website: ${client.domain || ""}
+Context we already have: ${client.notes || ""}
+
+Find and summarize, if publicly available:
+- Founding year and founder(s)
+- Headquarters / countries of operation
+- Industry and what the company sells or does
+- Company size (employee count, number of branches/stores)
+- Ownership & listing status (private, family-owned, publicly listed and on which exchange) and major shareholders
+- Financial history: revenue trends, IPO details, funding rounds, notable financial milestones — only if publicly reported
+- Leadership: CEO and other key executives
+- Key historical milestones (founding, expansions, acquisitions, rebrands, major partnerships) as a timeline
+
+Search in both English and Arabic. Only include facts you can find; never invent numbers or names.
+
+Output ONLY a JSON object with this exact shape and nothing else — no markdown fences, no preamble:
+{"summary":"2-3 sentence overview","founded":"","headquarters":"","industry":"","size":"","ownership":"","financials":"","leadership":"","milestones":[{"year":"","event":""}],"sources":[""]}
+Use an empty string or empty array for anything you could not find.`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: SONNET,
+      max_tokens: 3000,
+      messages: [{ role: "user", content: prompt }],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 6 }]
+    })
+  });
+
+  if (!res.ok) {
+    return { error: `API ${res.status}`, detail: (await res.text()).slice(0, 300) };
+  }
+
+  const data = await res.json();
+  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+  const obj = extractObject(text);
+  if (!obj) return { error: "could not parse", raw: text.slice(0, 600) };
+  return { ...obj, generatedAt: new Date().toISOString() };
+}
+
+function extractObject(text) {
+  const cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start === -1 || end === -1 || end < start) return null;
+  try {
+    const parsed = JSON.parse(cleaned.slice(start, end + 1));
+    return (parsed && typeof parsed === "object") ? parsed : null;
+  } catch { return null; }
+}
+
 // ---------- dedupe ----------
 
 function fingerprints(item) {
@@ -162,6 +228,36 @@ async function markSeen(env, item) {
   for (const key of fingerprints(item)) {
     await env.BRIEF.put(key, "1", { expirationTtl: 2592000 });
   }
+}
+
+// ---------- permanent history (for the dashboard) ----------
+
+async function saveHistory(env, clientId, clientName, item) {
+  const ts = Date.now();
+  const key = `hist:${clientId}:${ts}:${Math.random().toString(36).slice(2, 8)}`;
+  await env.BRIEF.put(key, JSON.stringify({
+    title: item.title, summary: item.summary, url: item.url,
+    date: item.date, source: item.source,
+    client: clientName, foundAt: new Date(ts).toISOString()
+  }));
+}
+
+async function listHistory(env, clientId, limit = 200) {
+  const prefix = `hist:${clientId}:`;
+  let cursor, keys = [];
+  do {
+    const res = await env.BRIEF.list({ prefix, cursor, limit: 1000 });
+    keys = keys.concat(res.keys);
+    cursor = res.list_complete ? undefined : res.cursor;
+  } while (cursor);
+
+  keys.sort((a, b) => b.name.localeCompare(a.name)); // newest first (ts embedded in key)
+  const top = keys.slice(0, limit);
+  const items = await Promise.all(top.map(async k => {
+    const raw = await env.BRIEF.get(k.name);
+    try { return JSON.parse(raw); } catch { return null; }
+  }));
+  return { count: keys.length, items: items.filter(Boolean) };
 }
 
 // ---------- email ----------
@@ -229,6 +325,7 @@ async function sendBrief(env, results) {
   for (const r of results) {
     for (const item of r.items) {
       await markSeen(env, item);
+      await saveHistory(env, r.id || r.client, r.client, item);
       marked++;
     }
   }
@@ -258,6 +355,7 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     if (adaptive && runIndex < state.next) {
       out.push({
         client: client.name,
+        id,
         skipped: true,
         nextRun: state.next,
         items: []
@@ -296,6 +394,7 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
 
     out.push({
       client: client.name,
+      id,
       model: model === HAIKU ? "haiku" : "sonnet",
       days,
       found: res.items.length,
@@ -308,4 +407,193 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
   }
 
   return out;
+}
+
+// ---------- dashboard ----------
+
+async function handleDashboard(request, env, url) {
+  if (!env.BRIEF) return json({ error: "KV binding BRIEF is missing" });
+
+  const token = url.searchParams.get("token");
+  const authorized = !!(token && env.TRIGGER_TOKEN && token === env.TRIGGER_TOKEN);
+  const clientId = url.searchParams.get("client");
+
+  if (url.searchParams.get("refresh-profile") === "1" && clientId) {
+    if (!authorized) return json({ error: "unauthorized" });
+    const client = clients.find(c => (c.id || c.name) === clientId);
+    if (!client) return new Response("Not found", { status: 404 });
+    const profile = await researchProfile(env, client);
+    await env.BRIEF.put("profile:" + clientId, JSON.stringify(profile));
+  }
+
+  if (url.searchParams.get("generate-missing") === "1" && !clientId) {
+    if (!authorized) return json({ error: "unauthorized" });
+    const batch = Math.min(Number(url.searchParams.get("limit") || "3"), 10);
+    let done = 0;
+    for (const client of clients) {
+      if (done >= batch) break;
+      const id = client.id || client.name;
+      const existing = await env.BRIEF.get("profile:" + id);
+      if (existing) continue;
+      const profile = await researchProfile(env, client);
+      await env.BRIEF.put("profile:" + id, JSON.stringify(profile));
+      done++;
+      await sleep(500);
+    }
+  }
+
+  const html = clientId
+    ? await renderClientPage(env, clientId, authorized, token)
+    : await renderIndexPage(env, authorized, token);
+
+  if (!html) return new Response("Not found", { status: 404 });
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+const PAGE_CSS = `
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 20px 60px; background:#f5f6f8; color:#1a1d24;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  a { color:#0b5cad; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:#666; font-size:13px; margin-bottom:28px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+  .card { background:#fff; border:1px solid #e6e8eb; border-radius:10px; padding:16px; }
+  .card h3 { margin:0 0 6px; font-size:15px; }
+  .card .domain { color:#888; font-size:12px; margin-bottom:8px; }
+  .card .summary { font-size:13px; color:#333; margin-bottom:10px; line-height:1.4; min-height:36px; }
+  .stats { display:flex; gap:14px; font-size:12px; color:#666; }
+  .stats b { color:#1a1d24; }
+  .badge { display:inline-block; font-size:11px; padding:2px 7px; border-radius:20px; background:#eef2f8; color:#456; margin-bottom:8px; }
+  .badge.missing { background:#fdf0ee; color:#a33; }
+  .backlink { display:inline-block; margin-bottom:18px; font-size:13px; }
+  .profile-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; margin:16px 0 24px; }
+  .field { background:#fff; border:1px solid #e6e8eb; border-radius:8px; padding:10px 12px; }
+  .field .k { font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#888; margin-bottom:3px; }
+  .field .v { font-size:13px; line-height:1.4; }
+  .timeline { border-left:2px solid #e6e8eb; margin:0 0 24px 6px; padding-left:16px; }
+  .timeline .ev { margin-bottom:10px; font-size:13px; }
+  .timeline .yr { font-weight:600; color:#0b5cad; }
+  ul.hist { list-style:none; padding:0; margin:0; }
+  ul.hist li { padding:14px 0; border-bottom:1px solid #eee; }
+  ul.hist .meta { font-size:12px; color:#888; margin-top:3px; }
+  .empty { color:#888; font-size:13px; padding:18px 0; }
+  .actions { margin:10px 0 20px; font-size:13px; }
+  .hint { font-size:12px; color:#999; margin-top:6px; }
+`;
+
+function page(title, body) {
+  return `<!doctype html><html><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(title)}</title><style>${PAGE_CSS}</style></head>
+  <body><div class="wrap">${body}</div></body></html>`;
+}
+
+function withToken(qs, token) {
+  return token ? `${qs}&token=${encodeURIComponent(token)}` : qs;
+}
+
+async function renderIndexPage(env, authorized, token) {
+  const cards = await Promise.all(clients.map(async client => {
+    const id = client.id || client.name;
+    const [profileRaw, hist] = await Promise.all([
+      env.BRIEF.get("profile:" + id),
+      listHistory(env, id, 1)
+    ]);
+    const profile = profileRaw ? JSON.parse(profileRaw) : null;
+    const latest = hist.items[0];
+
+    return `<a class="card" href="/dashboard?client=${encodeURIComponent(id)}${token ? "&token=" + encodeURIComponent(token) : ""}">
+      <span class="badge ${profile && !profile.error ? "" : "missing"}">${profile && !profile.error ? "Profile ready" : "No profile yet"}</span>
+      <h3>${esc(client.name)}</h3>
+      <div class="domain">${esc(client.domain || "")}</div>
+      <div class="summary">${esc(profile && profile.summary ? profile.summary : (client.notes || ""))}</div>
+      <div class="stats">
+        <span><b>${hist.count}</b> news items</span>
+        <span>${latest ? "last " + esc(latest.date || latest.foundAt.slice(0,10)) : "no history yet"}</span>
+      </div>
+    </a>`;
+  }));
+
+  const actions = authorized
+    ? `<div class="actions">
+        <a href="/dashboard?generate-missing=1${withToken("", token)}">Generate profiles for clients missing one (3 at a time)</a>
+      </div>`
+    : `<div class="hint">Add ?token=YOUR_TRIGGER_TOKEN to the URL to unlock profile generation.</div>`;
+
+  return page("Client Intelligence Dashboard", `
+    <h1>Client Intelligence Dashboard</h1>
+    <div class="sub">${clients.length} accounts · background profiles + full news history</div>
+    ${actions}
+    <div class="grid">${cards.join("")}</div>
+  `);
+}
+
+async function renderClientPage(env, clientId, authorized, token) {
+  const client = clients.find(c => (c.id || c.name) === clientId);
+  if (!client) return null;
+
+  const [profileRaw, hist] = await Promise.all([
+    env.BRIEF.get("profile:" + clientId),
+    listHistory(env, clientId, 200)
+  ]);
+  const profile = profileRaw ? JSON.parse(profileRaw) : null;
+
+  const backLink = `<a class="backlink" href="/dashboard${token ? "?token=" + encodeURIComponent(token) : ""}">&larr; All accounts</a>`;
+
+  let profileBlock;
+  if (!profile) {
+    profileBlock = `<div class="empty">No background profile yet.</div>` +
+      (authorized ? `<div class="actions"><a href="/dashboard?client=${encodeURIComponent(clientId)}&refresh-profile=1${withToken("", token)}">Generate profile now</a></div>` : "");
+  } else if (profile.error) {
+    profileBlock = `<div class="empty">Profile generation failed: ${esc(profile.error)}</div>` +
+      (authorized ? `<div class="actions"><a href="/dashboard?client=${encodeURIComponent(clientId)}&refresh-profile=1${withToken("", token)}">Retry</a></div>` : "");
+  } else {
+    const fields = [
+      ["Founded", profile.founded], ["Headquarters", profile.headquarters],
+      ["Industry", profile.industry], ["Size", profile.size],
+      ["Ownership", profile.ownership], ["Financials", profile.financials],
+      ["Leadership", profile.leadership]
+    ].filter(([, v]) => v);
+
+    const milestones = (profile.milestones || []).filter(m => m.event).map(m =>
+      `<div class="ev"><span class="yr">${esc(m.year || "")}</span> — ${esc(m.event)}</div>`
+    ).join("");
+
+    const sources = (profile.sources || []).filter(Boolean).map(s =>
+      `<a href="${esc(s)}">${esc(s)}</a>`
+    ).join(" · ");
+
+    profileBlock = `
+      <p>${esc(profile.summary || "")}</p>
+      <div class="profile-grid">
+        ${fields.map(([k, v]) => `<div class="field"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("")}
+      </div>
+      ${milestones ? `<div class="timeline">${milestones}</div>` : ""}
+      ${sources ? `<div class="hint">Sources: ${sources}</div>` : ""}
+      <div class="hint">Generated ${esc((profile.generatedAt || "").slice(0, 10))}
+        ${authorized ? ` · <a href="/dashboard?client=${encodeURIComponent(clientId)}&refresh-profile=1${withToken("", token)}">Refresh</a>` : ""}
+      </div>`;
+  }
+
+  const histItems = hist.items.length
+    ? `<ul class="hist">${hist.items.map(i => `
+        <li>
+          <a href="${esc(i.url)}" dir="auto"><b>${esc(i.title)}</b></a>
+          <div dir="auto">${esc(i.summary)}</div>
+          <div class="meta">${esc(i.source)} · ${esc(i.date)} · found ${esc((i.foundAt || "").slice(0, 10))}</div>
+        </li>`).join("")}</ul>`
+    : `<div class="empty">No news history recorded yet — it fills in as the weekly brief runs.</div>`;
+
+  return page(client.name, `
+    ${backLink}
+    <h1>${esc(client.name)}</h1>
+    <div class="sub">${esc(client.domain || "")}</div>
+    ${profileBlock}
+    <h3>News history (${hist.count})</h3>
+    ${histItems}
+  `);
 }
