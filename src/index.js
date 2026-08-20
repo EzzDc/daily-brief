@@ -114,7 +114,14 @@ async function searchClient(client, days) {
 async function fetchGoogleNewsRss(query, hl, gl) {
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${gl}:${hl}`;
   try {
-    const res = await fetch(url, { headers: { "user-agent": RSS_UA }, signal: AbortSignal.timeout(8000) });
+    const res = await fetch(url, {
+      headers: {
+        "user-agent": RSS_UA,
+        "accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+        "accept-language": `${hl},en;q=0.8`
+      },
+      signal: AbortSignal.timeout(8000)
+    });
     if (!res.ok) return { error: `RSS ${res.status}`, items: [] };
     return { items: parseRssItems(await res.text()) };
   } catch (err) {
@@ -344,9 +351,23 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     await env.BRIEF.put("run:index", String(runIndex));
   }
 
-  // clients are independent (separate KV keys, separate RSS calls) — run them concurrently
-  // so 14 clients don't queue up behind each other's network latency
-  return Promise.all(clients.map(client => processClient(env, client, { adaptive, forceDays, runIndex })));
+  // Run clients concurrently (so they don't queue up behind each other's network latency)
+  // but capped — firing all 28 RSS requests in one burst reads as scraping to Google and gets 503'd.
+  return mapWithConcurrency(clients, 3, client =>
+    processClient(env, client, { adaptive, forceDays, runIndex }));
+}
+
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }
 
 async function processClient(env, client, { adaptive, forceDays, runIndex }) {
