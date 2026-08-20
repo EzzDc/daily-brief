@@ -368,7 +368,8 @@ async function processClient(env, client, { adaptive, forceDays, runIndex }) {
     days,
     found: res.items.length,
     items: fresh,
-    error: res.error
+    error: res.error,
+    detail: res.detail
   };
 }
 
