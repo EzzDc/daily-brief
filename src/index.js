@@ -114,11 +114,11 @@ async function searchClient(client, days) {
 async function fetchGoogleNewsRss(query, hl, gl) {
   const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${gl}:${hl}`;
   try {
-    const res = await fetch(url, { headers: { "user-agent": RSS_UA } });
+    const res = await fetch(url, { headers: { "user-agent": RSS_UA }, signal: AbortSignal.timeout(8000) });
     if (!res.ok) return { error: `RSS ${res.status}`, items: [] };
     return { items: parseRssItems(await res.text()) };
   } catch (err) {
-    return { error: String(err), items: [] };
+    return { error: String((err && err.message) || err), items: [] };
   }
 }
 
@@ -336,11 +336,7 @@ async function sendBrief(env, results) {
 
 // ---------- main ----------
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
-  const out = [];
-
   // global run counter, only advances on adaptive runs
   let runIndex = Number(await env.BRIEF.get("run:index") || "0");
   if (adaptive) {
@@ -348,54 +344,49 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     await env.BRIEF.put("run:index", String(runIndex));
   }
 
-  for (const client of clients) {
-    const id = client.id || client.name;
-    const state = await getState(env, id);
+  // clients are independent (separate KV keys, separate RSS calls) — run them concurrently
+  // so 14 clients don't queue up behind each other's network latency
+  return Promise.all(clients.map(client => processClient(env, client, { adaptive, forceDays, runIndex })));
+}
 
-    // --- skip if this client is in backoff ---
-    if (adaptive && runIndex < state.next) {
-      out.push({
-        client: client.name,
-        id,
-        skipped: true,
-        nextRun: state.next,
-        items: []
-      });
-      continue;
-    }
+async function processClient(env, client, { adaptive, forceDays, runIndex }) {
+  const id = client.id || client.name;
+  const state = await getState(env, id);
 
-    // cover every week since this client was last checked
-    const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
-    const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
-
-    const res = await searchClient(client, days);
-
-    const fresh = [];
-    for (const item of res.items) {
-      if (!await isSeen(env, item)) fresh.push(item);
-    }
-
-    // --- update cadence state ---
-    if (adaptive) {
-      const misses = res.items.length > 0 ? 0 : state.misses + 1;
-      await env.BRIEF.put("state:" + id, JSON.stringify({
-        misses,
-        lastRun: runIndex,
-        next: runIndex + backoff(misses)
-      }));
-    }
-
-    out.push({
-      client: client.name,
-      id,
-      days,
-      found: res.items.length,
-      items: fresh,
-      error: res.error
-    });
+  // --- skip if this client is in backoff ---
+  if (adaptive && runIndex < state.next) {
+    return { client: client.name, id, skipped: true, nextRun: state.next, items: [] };
   }
 
-  return out;
+  // cover every week since this client was last checked
+  const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
+  const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
+
+  const res = await searchClient(client, days);
+
+  const fresh = [];
+  for (const item of res.items) {
+    if (!await isSeen(env, item)) fresh.push(item);
+  }
+
+  // --- update cadence state ---
+  if (adaptive) {
+    const misses = res.items.length > 0 ? 0 : state.misses + 1;
+    await env.BRIEF.put("state:" + id, JSON.stringify({
+      misses,
+      lastRun: runIndex,
+      next: runIndex + backoff(misses)
+    }));
+  }
+
+  return {
+    client: client.name,
+    id,
+    days,
+    found: res.items.length,
+    items: fresh,
+    error: res.error
+  };
 }
 
 // ---------- dashboard ----------
