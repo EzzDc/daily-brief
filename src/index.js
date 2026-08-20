@@ -31,6 +31,12 @@ export default {
       return handleDashboard(request, env, url);
     }
 
+    // Anything besides "/" is a stray browser/crawler request (favicon.ico, robots.txt, etc.) —
+    // never worth burning CSE quota on. Only "/" runs the actual search.
+    if (url.pathname !== "/") {
+      return new Response("Not found", { status: 404 });
+    }
+
     // Manual runs check every client unless you ask for adaptive.
     const results = await getAllNews(env, { adaptive, forceDays: days });
     if (!send) return json({ dryRun: true, results, html: buildHtml(results) });
