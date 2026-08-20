@@ -3,7 +3,6 @@ import clients from "../clients.json";
 const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
 const BASE_DAYS = 8;
-const RSS_UA = "Mozilla/5.0 (compatible; daily-brief-worker/1.0)";
 const WIKI_UA = "daily-brief-worker/1.0 (contact: ezz.aldissi@gmail.com)";
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
@@ -78,105 +77,68 @@ function backoff(misses) {
   return Math.min(misses, 4);
 }
 
-// ---------- search (free Google News RSS, no API key needed) ----------
+// ---------- search (Google Custom Search JSON API — free up to 100 queries/day) ----------
 
-async function searchClient(client, days) {
+async function searchClient(env, client, days) {
   const names = [client.name, ...(client.aliases || [])].filter(Boolean);
   const query = names.map(n => `"${n}"`).join(" OR ");
 
-  const [en, ar] = await Promise.all([
-    fetchGoogleNewsRss(query, "en-US", "US"),
-    fetchGoogleNewsRss(query, "ar", "SA")
-  ]);
+  const res = await fetchGoogleCse(env, query, days);
+  if (res.error) return { error: res.error, detail: res.detail, items: [] };
 
-  if (en.error && ar.error) {
-    return { error: en.error, items: [] };
-  }
-
-  const cutoff = Date.now() - Number(days) * 86400000;
   const bad = (client.exclude || []).map(w => w.toLowerCase());
-
   const seenUrls = new Set();
   const items = [];
-  for (const item of [...en.items, ...ar.items]) {
+  for (const item of res.items) {
     if (!item.title || !item.url) continue;
     if (seenUrls.has(item.url)) continue;
-    if (item.date && new Date(item.date).getTime() < cutoff) continue;
     if (bad.some(w => item.title.toLowerCase().includes(w))) continue;
     seenUrls.add(item.url);
     items.push(item);
   }
 
-  items.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   return { items: items.slice(0, 15) };
 }
 
-async function fetchGoogleNewsRss(query, hl, gl) {
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${gl}:${hl}`;
+async function fetchGoogleCse(env, query, days) {
+  if (!env.GOOGLE_CSE_KEY || !env.GOOGLE_CSE_CX) {
+    return { error: "GOOGLE_CSE_KEY/GOOGLE_CSE_CX not configured", items: [] };
+  }
+
+  const params = new URLSearchParams({
+    key: env.GOOGLE_CSE_KEY,
+    cx: env.GOOGLE_CSE_CX,
+    q: query,
+    num: "10",
+    dateRestrict: `d${days}`
+  });
+
   try {
-    const res = await fetch(url, {
-      headers: {
-        "user-agent": RSS_UA,
-        "accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
-        "accept-language": `${hl},en;q=0.8`
-      },
+    const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, {
       signal: AbortSignal.timeout(8000)
     });
-    if (!res.ok) return { error: `RSS ${res.status}`, items: [] };
-    return { items: parseRssItems(await res.text()) };
+    if (!res.ok) {
+      return { error: `CSE ${res.status}`, detail: (await res.text()).slice(0, 300), items: [] };
+    }
+    const data = await res.json();
+    return { items: (data.items || []).map(toCseItem) };
   } catch (err) {
     return { error: String((err && err.message) || err), items: [] };
   }
 }
 
-function parseRssItems(xml) {
-  const items = [];
-  const blocks = xml.split("<item>").slice(1);
-  for (const block of blocks) {
-    const body = block.split("</item>")[0];
-    const title = decodeEntities(stripCdata(extractTag(body, "title")));
-    const link = decodeEntities(stripCdata(extractTag(body, "link"))).trim();
-    const pubDate = extractTag(body, "pubDate");
-    const description = decodeEntities(stripCdata(extractTag(body, "description")));
-    const source = decodeEntities(stripCdata(extractTag(body, "source")));
-    if (!title || !link) continue;
+function toCseItem(entry) {
+  const meta = entry.pagemap && entry.pagemap.metatags && entry.pagemap.metatags[0];
+  const rawDate = meta && (meta["article:published_time"] || meta["og:updated_time"]
+    || meta["date"] || meta["datepublished"]);
 
-    const parsedDate = pubDate ? new Date(pubDate) : null;
-    const plainDescription = stripHtml(description).slice(0, 300);
-    // Google's description is usually just the title again plus the source name — skip if redundant.
-    const summary = plainDescription && !plainDescription.toLowerCase().startsWith(title.toLowerCase().slice(0, 30))
-      ? plainDescription : "";
-
-    items.push({
-      title,
-      url: link,
-      date: parsedDate && !isNaN(parsedDate) ? parsedDate.toISOString().slice(0, 10) : "",
-      summary,
-      source: source || ""
-    });
-  }
-  return items;
-}
-
-function extractTag(block, tag) {
-  const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
-  return m ? m[1].trim() : "";
-}
-
-function stripCdata(s) {
-  const m = s.match(/^<!\[CDATA\[([\s\S]*)\]\]>$/);
-  return m ? m[1] : s;
-}
-
-function stripHtml(s) {
-  return String(s || "").replace(/<[^>]+>/g, "").trim();
-}
-
-function decodeEntities(s) {
-  return String(s || "")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
+  return {
+    title: entry.title || "",
+    url: entry.link || "",
+    date: rawDate ? String(rawDate).slice(0, 10) : "",
+    summary: entry.snippet ? entry.snippet.replace(/\s+/g, " ").trim() : "",
+    source: entry.displayLink || ""
+  };
 }
 
 // ---------- company background profile (free Wikipedia summary) ----------
@@ -383,7 +345,7 @@ async function processClient(env, client, { adaptive, forceDays, runIndex }) {
   const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
   const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
 
-  const res = await searchClient(client, days);
+  const res = await searchClient(env, client, days);
 
   const fresh = [];
   for (const item of res.items) {
