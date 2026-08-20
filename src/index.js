@@ -3,9 +3,8 @@ import clients from "../clients.json";
 const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
 const BASE_DAYS = 8;
-
-const SONNET = "claude-sonnet-5";
-const HAIKU  = "claude-haiku-4-5-20251001";
+const RSS_UA = "Mozilla/5.0 (compatible; daily-brief-worker/1.0)";
+const WIKI_UA = "daily-brief-worker/1.0 (contact: ezz.aldissi@gmail.com)";
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
@@ -27,6 +26,10 @@ export default {
 
     if (send && url.searchParams.get("token") !== env.TRIGGER_TOKEN) {
       return json({ error: "unauthorized" });
+    }
+
+    if (url.pathname === "/dashboard") {
+      return handleDashboard(request, env, url);
     }
 
     // Manual runs check every client unless you ask for adaptive.
@@ -75,63 +78,127 @@ function backoff(misses) {
   return Math.min(misses, 4);
 }
 
-// ---------- search ----------
+// ---------- search (free Google News RSS, no API key needed) ----------
 
-async function searchClient(env, client, days, model) {
-  const prompt = `Search the web for news about this company from the last ${days} days:
+async function searchClient(client, days) {
+  const names = [client.name, ...(client.aliases || [])].filter(Boolean);
+  const query = names.map(n => `"${n}"`).join(" OR ");
 
-Company: ${client.name}
-Also known as: ${(client.aliases || []).join(", ")}
-Focus: ${client.focus || "all news about this company"}
-Context: ${client.notes || ""}
-Website: ${client.domain || ""}
+  const [en, ar] = await Promise.all([
+    fetchGoogleNewsRss(query, "en-US", "US"),
+    fetchGoogleNewsRss(query, "ar", "SA")
+  ]);
 
-Rules:
-- Only real news. Ignore coupon sites, discount roundups, job postings, and store-listing pages.
-- Ignore anything about a different company with a similar name.
-- Search in both English and Arabic.
-
-Format: [{"title":"","summary":"one sentence","url":"","date":"YYYY-MM-DD","source":""}]
-If there is nothing, return []
-
-Output the JSON array and nothing else. No preamble, no explanation, no markdown fences.`;
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2000,
-      messages: [{ role: "user", content: prompt }],
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }]
-    })
-  });
-
-  if (!res.ok) {
-    return { error: `API ${res.status}`, detail: (await res.text()).slice(0, 300), items: [] };
+  if (en.error && ar.error) {
+    return { error: en.error, items: [] };
   }
 
-  const data = await res.json();
-  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+  const cutoff = Date.now() - Number(days) * 86400000;
+  const bad = (client.exclude || []).map(w => w.toLowerCase());
 
-  const parsed = extractArray(text);
-  if (!parsed) return { error: "could not parse", raw: text.slice(0, 600), items: [] };
-  return { items: parsed };
+  const seenUrls = new Set();
+  const items = [];
+  for (const item of [...en.items, ...ar.items]) {
+    if (!item.title || !item.url) continue;
+    if (seenUrls.has(item.url)) continue;
+    if (item.date && new Date(item.date).getTime() < cutoff) continue;
+    if (bad.some(w => item.title.toLowerCase().includes(w))) continue;
+    seenUrls.add(item.url);
+    items.push(item);
+  }
+
+  items.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  return { items: items.slice(0, 15) };
 }
 
-function extractArray(text) {
-  const cleaned = text.replace(/```json/g, "").replace(/```/g, "");
-  const start = cleaned.indexOf("[");
-  const end = cleaned.lastIndexOf("]");
-  if (start === -1 || end === -1 || end < start) return null;
+async function fetchGoogleNewsRss(query, hl, gl) {
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${gl}:${hl}`;
   try {
-    const parsed = JSON.parse(cleaned.slice(start, end + 1));
-    return Array.isArray(parsed) ? parsed : null;
-  } catch { return null; }
+    const res = await fetch(url, { headers: { "user-agent": RSS_UA } });
+    if (!res.ok) return { error: `RSS ${res.status}`, items: [] };
+    return { items: parseRssItems(await res.text()) };
+  } catch (err) {
+    return { error: String(err), items: [] };
+  }
+}
+
+function parseRssItems(xml) {
+  const items = [];
+  const blocks = xml.split("<item>").slice(1);
+  for (const block of blocks) {
+    const body = block.split("</item>")[0];
+    const title = decodeEntities(stripCdata(extractTag(body, "title")));
+    const link = decodeEntities(stripCdata(extractTag(body, "link"))).trim();
+    const pubDate = extractTag(body, "pubDate");
+    const description = decodeEntities(stripCdata(extractTag(body, "description")));
+    const source = decodeEntities(stripCdata(extractTag(body, "source")));
+    if (!title || !link) continue;
+
+    const parsedDate = pubDate ? new Date(pubDate) : null;
+    const plainDescription = stripHtml(description).slice(0, 300);
+    // Google's description is usually just the title again plus the source name — skip if redundant.
+    const summary = plainDescription && !plainDescription.toLowerCase().startsWith(title.toLowerCase().slice(0, 30))
+      ? plainDescription : "";
+
+    items.push({
+      title,
+      url: link,
+      date: parsedDate && !isNaN(parsedDate) ? parsedDate.toISOString().slice(0, 10) : "",
+      summary,
+      source: source || ""
+    });
+  }
+  return items;
+}
+
+function extractTag(block, tag) {
+  const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`));
+  return m ? m[1].trim() : "";
+}
+
+function stripCdata(s) {
+  const m = s.match(/^<!\[CDATA\[([\s\S]*)\]\]>$/);
+  return m ? m[1] : s;
+}
+
+function stripHtml(s) {
+  return String(s || "").replace(/<[^>]+>/g, "").trim();
+}
+
+function decodeEntities(s) {
+  return String(s || "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
+}
+
+// ---------- company background profile (free Wikipedia summary) ----------
+
+async function fetchProfile(client) {
+  const candidates = [client.name, ...(client.aliases || [])].filter(Boolean);
+
+  for (const name of candidates) {
+    try {
+      const title = name.trim().replace(/\s+/g, "_");
+      const res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
+        headers: { "user-agent": WIKI_UA }
+      });
+      if (!res.ok) continue;
+
+      const data = await res.json();
+      if (data.type === "disambiguation" || !data.extract) continue;
+
+      return {
+        summary: data.extract,
+        wikiTitle: data.title,
+        sourceUrl: (data.content_urls && data.content_urls.desktop && data.content_urls.desktop.page)
+          || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
+        generatedAt: new Date().toISOString()
+      };
+    } catch { /* try next candidate */ }
+  }
+
+  return { error: "no matching Wikipedia article found", generatedAt: new Date().toISOString() };
 }
 
 // ---------- dedupe ----------
@@ -162,6 +229,36 @@ async function markSeen(env, item) {
   for (const key of fingerprints(item)) {
     await env.BRIEF.put(key, "1", { expirationTtl: 2592000 });
   }
+}
+
+// ---------- permanent history (for the dashboard) ----------
+
+async function saveHistory(env, clientId, clientName, item) {
+  const ts = Date.now();
+  const key = `hist:${clientId}:${ts}:${Math.random().toString(36).slice(2, 8)}`;
+  await env.BRIEF.put(key, JSON.stringify({
+    title: item.title, summary: item.summary, url: item.url,
+    date: item.date, source: item.source,
+    client: clientName, foundAt: new Date(ts).toISOString()
+  }));
+}
+
+async function listHistory(env, clientId, limit = 200) {
+  const prefix = `hist:${clientId}:`;
+  let cursor, keys = [];
+  do {
+    const res = await env.BRIEF.list({ prefix, cursor, limit: 1000 });
+    keys = keys.concat(res.keys);
+    cursor = res.list_complete ? undefined : res.cursor;
+  } while (cursor);
+
+  keys.sort((a, b) => b.name.localeCompare(a.name)); // newest first (ts embedded in key)
+  const top = keys.slice(0, limit);
+  const items = await Promise.all(top.map(async k => {
+    const raw = await env.BRIEF.get(k.name);
+    try { return JSON.parse(raw); } catch { return null; }
+  }));
+  return { count: keys.length, items: items.filter(Boolean) };
 }
 
 // ---------- email ----------
@@ -229,6 +326,7 @@ async function sendBrief(env, results) {
   for (const r of results) {
     for (const item of r.items) {
       await markSeen(env, item);
+      await saveHistory(env, r.id || r.client, r.client, item);
       marked++;
     }
   }
@@ -258,6 +356,7 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     if (adaptive && runIndex < state.next) {
       out.push({
         client: client.name,
+        id,
         skipped: true,
         nextRun: state.next,
         items: []
@@ -269,18 +368,10 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
     const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
 
-    // quiet clients get the cheaper model
-    const model = state.misses >= 2 ? HAIKU : SONNET;
-
-    const res = await searchClient(env, client, days, model);
-
-    const bad = (client.exclude || []).map(w => w.toLowerCase());
-    const kept = res.items.filter(i =>
-      !bad.some(w => String(i.title || "").toLowerCase().includes(w))
-    );
+    const res = await searchClient(client, days);
 
     const fresh = [];
-    for (const item of kept) {
+    for (const item of res.items) {
       if (!await isSeen(env, item)) fresh.push(item);
     }
 
@@ -296,16 +387,176 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
 
     out.push({
       client: client.name,
-      model: model === HAIKU ? "haiku" : "sonnet",
+      id,
       days,
       found: res.items.length,
       items: fresh,
-      error: res.error,
-      raw: res.raw || res.detail
+      error: res.error
     });
-
-    await sleep(500);
   }
 
   return out;
+}
+
+// ---------- dashboard ----------
+
+async function handleDashboard(request, env, url) {
+  if (!env.BRIEF) return json({ error: "KV binding BRIEF is missing" });
+
+  const token = url.searchParams.get("token");
+  const authorized = !!(token && env.TRIGGER_TOKEN && token === env.TRIGGER_TOKEN);
+  const clientId = url.searchParams.get("client");
+
+  if (url.searchParams.get("refresh-profile") === "1" && clientId) {
+    if (!authorized) return json({ error: "unauthorized" });
+    const client = clients.find(c => (c.id || c.name) === clientId);
+    if (!client) return new Response("Not found", { status: 404 });
+    const profile = await fetchProfile(client);
+    await env.BRIEF.put("profile:" + clientId, JSON.stringify(profile));
+  }
+
+  if (url.searchParams.get("generate-missing") === "1" && !clientId) {
+    if (!authorized) return json({ error: "unauthorized" });
+    const batch = Math.min(Number(url.searchParams.get("limit") || "5"), 14);
+    let done = 0;
+    for (const client of clients) {
+      if (done >= batch) break;
+      const id = client.id || client.name;
+      const existing = await env.BRIEF.get("profile:" + id);
+      if (existing) continue;
+      const profile = await fetchProfile(client);
+      await env.BRIEF.put("profile:" + id, JSON.stringify(profile));
+      done++;
+    }
+  }
+
+  const html = clientId
+    ? await renderClientPage(env, clientId, authorized, token)
+    : await renderIndexPage(env, authorized, token);
+
+  if (!html) return new Response("Not found", { status: 404 });
+  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+const PAGE_CSS = `
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 20px 60px; background:#f5f6f8; color:#1a1d24;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  a { color:#0b5cad; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .wrap { max-width:900px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:#666; font-size:13px; margin-bottom:28px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; }
+  .card { background:#fff; border:1px solid #e6e8eb; border-radius:10px; padding:16px; }
+  .card h3 { margin:0 0 6px; font-size:15px; }
+  .card .domain { color:#888; font-size:12px; margin-bottom:8px; }
+  .card .summary { font-size:13px; color:#333; margin-bottom:10px; line-height:1.4; min-height:36px; }
+  .stats { display:flex; gap:14px; font-size:12px; color:#666; }
+  .stats b { color:#1a1d24; }
+  .badge { display:inline-block; font-size:11px; padding:2px 7px; border-radius:20px; background:#eef2f8; color:#456; margin-bottom:8px; }
+  .badge.missing { background:#fdf0ee; color:#a33; }
+  .backlink { display:inline-block; margin-bottom:18px; font-size:13px; }
+  .hint { font-size:12px; color:#999; margin-top:6px; }
+  ul.hist { list-style:none; padding:0; margin:0; }
+  ul.hist li { padding:14px 0; border-bottom:1px solid #eee; }
+  ul.hist .meta { font-size:12px; color:#888; margin-top:3px; }
+  .empty { color:#888; font-size:13px; padding:18px 0; }
+  .actions { margin:10px 0 20px; font-size:13px; }
+`;
+
+function page(title, body) {
+  return `<!doctype html><html><head><meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${esc(title)}</title><style>${PAGE_CSS}</style></head>
+  <body><div class="wrap">${body}</div></body></html>`;
+}
+
+function withToken(qs, token) {
+  return token ? `${qs}&token=${encodeURIComponent(token)}` : qs;
+}
+
+async function renderIndexPage(env, authorized, token) {
+  const cards = await Promise.all(clients.map(async client => {
+    const id = client.id || client.name;
+    const [profileRaw, hist] = await Promise.all([
+      env.BRIEF.get("profile:" + id),
+      listHistory(env, id, 1)
+    ]);
+    const profile = profileRaw ? JSON.parse(profileRaw) : null;
+    const latest = hist.items[0];
+
+    return `<a class="card" href="/dashboard?client=${encodeURIComponent(id)}${token ? "&token=" + encodeURIComponent(token) : ""}">
+      <span class="badge ${profile && !profile.error ? "" : "missing"}">${profile && !profile.error ? "Profile ready" : "No profile yet"}</span>
+      <h3>${esc(client.name)}</h3>
+      <div class="domain">${esc(client.domain || "")}</div>
+      <div class="summary">${esc(profile && profile.summary ? profile.summary : (client.notes || ""))}</div>
+      <div class="stats">
+        <span><b>${hist.count}</b> news items</span>
+        <span>${latest ? "last " + esc(latest.date || latest.foundAt.slice(0,10)) : "no history yet"}</span>
+      </div>
+    </a>`;
+  }));
+
+  const actions = authorized
+    ? `<div class="actions">
+        <a href="/dashboard?generate-missing=1${withToken("", token)}">Generate profiles for clients missing one (5 at a time, free)</a>
+      </div>`
+    : `<div class="hint">Add ?token=YOUR_TRIGGER_TOKEN to the URL to unlock profile generation.</div>`;
+
+  return page("Client Intelligence Dashboard", `
+    <h1>Client Intelligence Dashboard</h1>
+    <div class="sub">${clients.length} accounts · Wikipedia background profiles + full news history</div>
+    ${actions}
+    <div class="grid">${cards.join("")}</div>
+  `);
+}
+
+async function renderClientPage(env, clientId, authorized, token) {
+  const client = clients.find(c => (c.id || c.name) === clientId);
+  if (!client) return null;
+
+  const [profileRaw, hist] = await Promise.all([
+    env.BRIEF.get("profile:" + clientId),
+    listHistory(env, clientId, 200)
+  ]);
+  const profile = profileRaw ? JSON.parse(profileRaw) : null;
+
+  const backLink = `<a class="backlink" href="/dashboard${token ? "?token=" + encodeURIComponent(token) : ""}">&larr; All accounts</a>`;
+  const refreshLink = `/dashboard?client=${encodeURIComponent(clientId)}&refresh-profile=1${withToken("", token)}`;
+
+  let profileBlock;
+  if (!profile) {
+    profileBlock = `<div class="empty">No background profile yet.</div>` +
+      (authorized ? `<div class="actions"><a href="${refreshLink}">Look up on Wikipedia</a></div>` : "");
+  } else if (profile.error) {
+    profileBlock = `<div class="empty">${esc(profile.error)}</div>` +
+      (authorized ? `<div class="actions"><a href="${refreshLink}">Retry</a></div>` : "");
+  } else {
+    profileBlock = `
+      <p>${esc(profile.summary || "")}</p>
+      <div class="hint">Source: <a href="${esc(profile.sourceUrl)}">${esc(profile.wikiTitle || "Wikipedia")}</a>
+        · fetched ${esc((profile.generatedAt || "").slice(0, 10))}
+        ${authorized ? ` · <a href="${refreshLink}">Refresh</a>` : ""}
+      </div>`;
+  }
+
+  const histItems = hist.items.length
+    ? `<ul class="hist">${hist.items.map(i => `
+        <li>
+          <a href="${esc(i.url)}" dir="auto"><b>${esc(i.title)}</b></a>
+          <div dir="auto">${esc(i.summary)}</div>
+          <div class="meta">${esc(i.source)} · ${esc(i.date)} · found ${esc((i.foundAt || "").slice(0, 10))}</div>
+        </li>`).join("")}</ul>`
+    : `<div class="empty">No news history recorded yet — it fills in as the weekly brief runs.</div>`;
+
+  return page(client.name, `
+    ${backLink}
+    <h1>${esc(client.name)}</h1>
+    <div class="sub">${esc(client.domain || "")}</div>
+    ${profileBlock}
+    <h3>News history (${hist.count})</h3>
+    ${histItems}
+  `);
 }
