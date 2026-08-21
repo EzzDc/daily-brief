@@ -3,7 +3,6 @@ import clients from "../clients.json";
 const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
 const BASE_DAYS = 8;
-const WIKI_UA = "daily-brief-worker/1.0 (contact: ezz.aldissi@gmail.com)";
 
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
@@ -145,35 +144,6 @@ function toCseItem(entry) {
     summary: entry.snippet ? entry.snippet.replace(/\s+/g, " ").trim() : "",
     source: entry.displayLink || ""
   };
-}
-
-// ---------- company background profile (free Wikipedia summary) ----------
-
-async function fetchProfile(client) {
-  const candidates = [client.name, ...(client.aliases || [])].filter(Boolean);
-
-  for (const name of candidates) {
-    try {
-      const title = name.trim().replace(/\s+/g, "_");
-      const res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`, {
-        headers: { "user-agent": WIKI_UA }
-      });
-      if (!res.ok) continue;
-
-      const data = await res.json();
-      if (data.type === "disambiguation" || !data.extract) continue;
-
-      return {
-        summary: data.extract,
-        wikiTitle: data.title,
-        sourceUrl: (data.content_urls && data.content_urls.desktop && data.content_urls.desktop.page)
-          || `https://en.wikipedia.org/wiki/${encodeURIComponent(title)}`,
-        generatedAt: new Date().toISOString()
-      };
-    } catch { /* try next candidate */ }
-  }
-
-  return { error: "no matching Wikipedia article found", generatedAt: new Date().toISOString() };
 }
 
 // ---------- dedupe ----------
@@ -384,36 +354,10 @@ async function processClient(env, client, { adaptive, forceDays, runIndex }) {
 async function handleDashboard(request, env, url) {
   if (!env.BRIEF) return json({ error: "KV binding BRIEF is missing" });
 
-  const token = url.searchParams.get("token");
-  const authorized = !!(token && env.TRIGGER_TOKEN && token === env.TRIGGER_TOKEN);
   const clientId = url.searchParams.get("client");
-
-  if (url.searchParams.get("refresh-profile") === "1" && clientId) {
-    if (!authorized) return json({ error: "unauthorized" });
-    const client = clients.find(c => (c.id || c.name) === clientId);
-    if (!client) return new Response("Not found", { status: 404 });
-    const profile = await fetchProfile(client);
-    await env.BRIEF.put("profile:" + clientId, JSON.stringify(profile));
-  }
-
-  if (url.searchParams.get("generate-missing") === "1" && !clientId) {
-    if (!authorized) return json({ error: "unauthorized" });
-    const batch = Math.min(Number(url.searchParams.get("limit") || "5"), 14);
-    let done = 0;
-    for (const client of clients) {
-      if (done >= batch) break;
-      const id = client.id || client.name;
-      const existing = await env.BRIEF.get("profile:" + id);
-      if (existing) continue;
-      const profile = await fetchProfile(client);
-      await env.BRIEF.put("profile:" + id, JSON.stringify(profile));
-      done++;
-    }
-  }
-
   const html = clientId
-    ? await renderClientPage(env, clientId, authorized, token)
-    : await renderIndexPage(env, authorized, token);
+    ? await renderClientPage(env, clientId)
+    : await renderIndexPage(env);
 
   if (!html) return new Response("Not found", { status: 404 });
   return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
@@ -436,15 +380,11 @@ const PAGE_CSS = `
   .card .summary { font-size:13px; color:#333; margin-bottom:10px; line-height:1.4; min-height:36px; }
   .stats { display:flex; gap:14px; font-size:12px; color:#666; }
   .stats b { color:#1a1d24; }
-  .badge { display:inline-block; font-size:11px; padding:2px 7px; border-radius:20px; background:#eef2f8; color:#456; margin-bottom:8px; }
-  .badge.missing { background:#fdf0ee; color:#a33; }
   .backlink { display:inline-block; margin-bottom:18px; font-size:13px; }
-  .hint { font-size:12px; color:#999; margin-top:6px; }
   ul.hist { list-style:none; padding:0; margin:0; }
   ul.hist li { padding:14px 0; border-bottom:1px solid #eee; }
   ul.hist .meta { font-size:12px; color:#888; margin-top:3px; }
   .empty { color:#888; font-size:13px; padding:18px 0; }
-  .actions { margin:10px 0 20px; font-size:13px; }
 `;
 
 function page(title, body) {
@@ -454,25 +394,16 @@ function page(title, body) {
   <body><div class="wrap">${body}</div></body></html>`;
 }
 
-function withToken(qs, token) {
-  return token ? `${qs}&token=${encodeURIComponent(token)}` : qs;
-}
-
-async function renderIndexPage(env, authorized, token) {
+async function renderIndexPage(env) {
   const cards = await Promise.all(clients.map(async client => {
     const id = client.id || client.name;
-    const [profileRaw, hist] = await Promise.all([
-      env.BRIEF.get("profile:" + id),
-      listHistory(env, id, 1)
-    ]);
-    const profile = profileRaw ? JSON.parse(profileRaw) : null;
+    const hist = await listHistory(env, id, 1);
     const latest = hist.items[0];
 
-    return `<a class="card" href="/dashboard?client=${encodeURIComponent(id)}${token ? "&token=" + encodeURIComponent(token) : ""}">
-      <span class="badge ${profile && !profile.error ? "" : "missing"}">${profile && !profile.error ? "Profile ready" : "No profile yet"}</span>
+    return `<a class="card" href="/dashboard?client=${encodeURIComponent(id)}">
       <h3>${esc(client.name)}</h3>
       <div class="domain">${esc(client.domain || "")}</div>
-      <div class="summary">${esc(profile && profile.summary ? profile.summary : (client.notes || ""))}</div>
+      <div class="summary">${esc(client.notes || "")}</div>
       <div class="stats">
         <span><b>${hist.count}</b> news items</span>
         <span>${latest ? "last " + esc(latest.date || latest.foundAt.slice(0,10)) : "no history yet"}</span>
@@ -480,48 +411,18 @@ async function renderIndexPage(env, authorized, token) {
     </a>`;
   }));
 
-  const actions = authorized
-    ? `<div class="actions">
-        <a href="/dashboard?generate-missing=1${withToken("", token)}">Generate profiles for clients missing one (5 at a time, free)</a>
-      </div>`
-    : `<div class="hint">Add ?token=YOUR_TRIGGER_TOKEN to the URL to unlock profile generation.</div>`;
-
   return page("Client Intelligence Dashboard", `
     <h1>Client Intelligence Dashboard</h1>
-    <div class="sub">${clients.length} accounts · Wikipedia background profiles + full news history</div>
-    ${actions}
+    <div class="sub">${clients.length} accounts · full news history</div>
     <div class="grid">${cards.join("")}</div>
   `);
 }
 
-async function renderClientPage(env, clientId, authorized, token) {
+async function renderClientPage(env, clientId) {
   const client = clients.find(c => (c.id || c.name) === clientId);
   if (!client) return null;
 
-  const [profileRaw, hist] = await Promise.all([
-    env.BRIEF.get("profile:" + clientId),
-    listHistory(env, clientId, 200)
-  ]);
-  const profile = profileRaw ? JSON.parse(profileRaw) : null;
-
-  const backLink = `<a class="backlink" href="/dashboard${token ? "?token=" + encodeURIComponent(token) : ""}">&larr; All accounts</a>`;
-  const refreshLink = `/dashboard?client=${encodeURIComponent(clientId)}&refresh-profile=1${withToken("", token)}`;
-
-  let profileBlock;
-  if (!profile) {
-    profileBlock = `<div class="empty">No background profile yet.</div>` +
-      (authorized ? `<div class="actions"><a href="${refreshLink}">Look up on Wikipedia</a></div>` : "");
-  } else if (profile.error) {
-    profileBlock = `<div class="empty">${esc(profile.error)}</div>` +
-      (authorized ? `<div class="actions"><a href="${refreshLink}">Retry</a></div>` : "");
-  } else {
-    profileBlock = `
-      <p>${esc(profile.summary || "")}</p>
-      <div class="hint">Source: <a href="${esc(profile.sourceUrl)}">${esc(profile.wikiTitle || "Wikipedia")}</a>
-        · fetched ${esc((profile.generatedAt || "").slice(0, 10))}
-        ${authorized ? ` · <a href="${refreshLink}">Refresh</a>` : ""}
-      </div>`;
-  }
+  const hist = await listHistory(env, clientId, 200);
 
   const histItems = hist.items.length
     ? `<ul class="hist">${hist.items.map(i => `
@@ -533,10 +434,10 @@ async function renderClientPage(env, clientId, authorized, token) {
     : `<div class="empty">No news history recorded yet — it fills in as the weekly brief runs.</div>`;
 
   return page(client.name, `
-    ${backLink}
+    <a class="backlink" href="/dashboard">&larr; All accounts</a>
     <h1>${esc(client.name)}</h1>
     <div class="sub">${esc(client.domain || "")}</div>
-    ${profileBlock}
+    <p>${esc(client.notes || "")}</p>
     <h3>News history (${hist.count})</h3>
     ${histItems}
   `);
