@@ -4,6 +4,9 @@ const TO_EMAIL = "ezz.aldissi@gmail.com";   // <-- your address
 const FROM_EMAIL = "onboarding@resend.dev";
 const BASE_DAYS = 8;
 
+const SONNET = "claude-sonnet-5";
+const HAIKU = "claude-haiku-4-5";
+
 const json = obj => new Response(JSON.stringify(obj, null, 2), {
   headers: { "content-type": "application/json; charset=utf-8" }
 });
@@ -31,7 +34,7 @@ export default {
     }
 
     // Anything besides "/" is a stray browser/crawler request (favicon.ico, robots.txt, etc.) —
-    // never worth burning CSE quota on. Only "/" runs the actual search.
+    // never worth burning a paid Claude API call on. Only "/" runs the actual search.
     if (url.pathname !== "/") {
       return new Response("Not found", { status: 404 });
     }
@@ -82,68 +85,79 @@ function backoff(misses) {
   return Math.min(misses, 4);
 }
 
-// ---------- search (Google Custom Search JSON API — free up to 100 queries/day) ----------
+// ---------- search (Claude + web_search tool) ----------
 
-async function searchClient(env, client, days) {
-  const names = [client.name, ...(client.aliases || [])].filter(Boolean);
-  const query = names.map(n => `"${n}"`).join(" OR ");
+async function searchClient(env, client, days, model) {
+  const prompt = `Search the web for news about this company from the last ${days} days:
 
-  const res = await fetchGoogleCse(env, query, days);
-  if (res.error) return { error: res.error, detail: res.detail, items: [] };
+Company: ${client.name}
+Also known as: ${(client.aliases || []).join(", ")}
+Focus: ${client.focus || "all news about this company"}
+Context: ${client.notes || ""}
+Website: ${client.domain || ""}
+
+Rules:
+- Only real news. Ignore coupon sites, discount roundups, job postings, and store-listing pages.
+- Ignore anything about a different company with a similar name.
+- Search in both English and Arabic.
+
+Format: [{"title":"","summary":"one sentence","url":"","date":"YYYY-MM-DD","source":""}]
+If there is nothing, return []
+
+Output the JSON array and nothing else. No preamble, no explanation, no markdown fences.`;
+
+  if (!env.ANTHROPIC_API_KEY) {
+    return { error: "ANTHROPIC_API_KEY not configured", items: [] };
+  }
+
+  let res;
+  try {
+    res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 2000,
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }]
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (err) {
+    return { error: String((err && err.message) || err), items: [] };
+  }
+
+  if (!res.ok) {
+    return { error: `API ${res.status}`, detail: (await res.text()).slice(0, 300), items: [] };
+  }
+
+  const data = await res.json();
+  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("").trim();
+
+  const parsed = extractArray(text);
+  if (!parsed) return { error: "could not parse", detail: text.slice(0, 600), items: [] };
 
   const bad = (client.exclude || []).map(w => w.toLowerCase());
-  const seenUrls = new Set();
-  const items = [];
-  for (const item of res.items) {
-    if (!item.title || !item.url) continue;
-    if (seenUrls.has(item.url)) continue;
-    if (bad.some(w => item.title.toLowerCase().includes(w))) continue;
-    seenUrls.add(item.url);
-    items.push(item);
-  }
+  const items = parsed.filter(i =>
+    i && i.title && i.url && !bad.some(w => String(i.title).toLowerCase().includes(w))
+  );
 
   return { items: items.slice(0, 15) };
 }
 
-async function fetchGoogleCse(env, query, days) {
-  if (!env.GOOGLE_CSE_KEY || !env.GOOGLE_CSE_CX) {
-    return { error: "GOOGLE_CSE_KEY/GOOGLE_CSE_CX not configured", items: [] };
-  }
-
-  const params = new URLSearchParams({
-    key: env.GOOGLE_CSE_KEY,
-    cx: env.GOOGLE_CSE_CX,
-    q: query,
-    num: "10",
-    dateRestrict: `d${days}`
-  });
-
+function extractArray(text) {
+  const cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+  if (start === -1 || end === -1 || end < start) return null;
   try {
-    const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, {
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!res.ok) {
-      return { error: `CSE ${res.status}`, detail: (await res.text()).slice(0, 300), items: [] };
-    }
-    const data = await res.json();
-    return { items: (data.items || []).map(toCseItem) };
-  } catch (err) {
-    return { error: String((err && err.message) || err), items: [] };
-  }
-}
-
-function toCseItem(entry) {
-  const meta = entry.pagemap && entry.pagemap.metatags && entry.pagemap.metatags[0];
-  const rawDate = meta && (meta["article:published_time"] || meta["og:updated_time"]
-    || meta["date"] || meta["datepublished"]);
-
-  return {
-    title: entry.title || "",
-    url: entry.link || "",
-    date: rawDate ? String(rawDate).slice(0, 10) : "",
-    summary: entry.snippet ? entry.snippet.replace(/\s+/g, " ").trim() : "",
-    source: entry.displayLink || ""
-  };
+    const parsed = JSON.parse(cleaned.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
 }
 
 // ---------- dedupe ----------
@@ -289,8 +303,8 @@ async function getAllNews(env, { adaptive = false, forceDays = null } = {}) {
     await env.BRIEF.put("run:index", String(runIndex));
   }
 
-  // Run clients concurrently (so they don't queue up behind each other's network latency)
-  // but capped — firing all 28 RSS requests in one burst reads as scraping to Google and gets 503'd.
+  // Run clients concurrently (so they don't queue up behind each other's latency) but capped,
+  // to stay comfortably under Anthropic's per-minute rate limits.
   return mapWithConcurrency(clients, 3, client =>
     processClient(env, client, { adaptive, forceDays, runIndex }));
 }
@@ -321,7 +335,10 @@ async function processClient(env, client, { adaptive, forceDays, runIndex }) {
   const runsWaited = adaptive && state.lastRun ? runIndex - state.lastRun : 1;
   const days = forceDays || String(Math.min(BASE_DAYS + (runsWaited - 1) * 7, 40));
 
-  const res = await searchClient(env, client, days);
+  // quiet clients get the cheaper model
+  const model = state.misses >= 2 ? HAIKU : SONNET;
+
+  const res = await searchClient(env, client, days, model);
 
   const fresh = [];
   for (const item of res.items) {
@@ -341,6 +358,7 @@ async function processClient(env, client, { adaptive, forceDays, runIndex }) {
   return {
     client: client.name,
     id,
+    model: model === HAIKU ? "haiku" : "sonnet",
     days,
     found: res.items.length,
     items: fresh,
